@@ -1,8 +1,8 @@
 $ado_env_name=$args[0]
-$ado_work_dir=$args[1]
 $ado_project_url=$args[2]
-$ado_project_name=$args[3]
-$ado_pat=$args[4]
+$ado_project_name=$args[2]
+$ado_pat=$args[3]
+$ado_work_dir="C:\ADODeploymentWorkDir"
 
 $ErrorActionPreference="Stop";
 If(-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent() ).IsInRole( [Security.Principal.WindowsBuiltInRole] "Administrator")){ throw "Run command in an administrator PowerShell prompt"};
