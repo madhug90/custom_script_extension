@@ -4,6 +4,22 @@ $ado_project_name=$args[2]
 $ado_pat=$args[3]
 $ado_work_dir="C:\ADODeploymentWorkDir"
 
+winrm quickconfig -force
+winrm set winrm/config/service/auth '@{Basic="true"}'
+winrm set winrm/config/service '@{AllowUnencrypted="false"}'
+
+$cert = New-SelfSignedCertificate -DnsName "$env:COMPUTERNAME" -CertStoreLocation "cert:\LocalMachine\My"
+$thumbprint = $cert.Thumbprint
+winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname='$env:COMPUTERNAME'; CertificateThumbprint='$thumbprint'}"
+
+New-NetFirewallRule -Name "AllowWinRMHTTPS" -Protocol TCP -LocalPort 5986 -Direction Inbound -Action Allow
+
+Set-Service -Name WinRM -StartupType Automatic
+Start-Service WinRM
+
+Add-LocalGroupMember -Group "Administrators" -Member "azureuser"
+Add-LocalGroupMember -Group "Remote Management Users" -Member "azureuser"
+
 $ErrorActionPreference="Stop";
 If(-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent() ).IsInRole( [Security.Principal.WindowsBuiltInRole] "Administrator")){ throw "Run command in an administrator PowerShell prompt"};
 If($PSVersionTable.PSVersion -lt (New-Object System.Version("3.0"))){ throw "The minimum version of Windows PowerShell that is required by the script (3.0) does not match the currently running version of Windows PowerShell." };
