@@ -24,3 +24,91 @@ $WebClient.DownloadFile($Uri, $agentZip);
 Add-Type -AssemblyName System.IO.Compression.FileSystem;[System.IO.Compression.ZipFile]::ExtractToDirectory( $agentZip, "$PWD");
 .\config.cmd --unattended --replace --environment --environmentname $ado_env_name --agent $env:COMPUTERNAME --runasservice --runAsAutoLogon --noRestart --work $ado_work_dir --url $ado_project_url --projectname $ado_project_name --auth PAT --token $ado_pat;
 Remove-Item $agentZip;
+
+# Set variables
+$Username = "azureuser"  # CHANGE if needed
+$WinRMPort = 5986
+$DnsName = $env:COMPUTERNAME
+$LogPath = "C:\Ansible-WinRM-Setup.log"
+
+# Start logging
+Start-Transcript -Path $LogPath -Append
+
+Write-Host "`n🔧 Starting idempotent WinRM setup for Ansible over HTTPS on port $WinRMPort..."
+
+# Enable WinRM if not already
+if ((winrm enumerate winrm/config/listener -ErrorAction SilentlyContinue) -eq $null) {
+    Write-Host "✅ Enabling WinRM..."
+    winrm quickconfig -force
+}
+
+# Enable Basic Auth if not already
+$basicAuth = (winrm get winrm/config/service/auth | Select-String "Basic").ToString()
+if ($basicAuth -notmatch "true") {
+    Write-Host "✅ Enabling Basic Authentication..."
+    winrm set winrm/config/service/auth '@{Basic="true"}'
+}
+
+# Disable unencrypted connections if not already
+$unencrypted = (winrm get winrm/config/service | Select-String "AllowUnencrypted").ToString()
+if ($unencrypted -notmatch "false") {
+    Write-Host "✅ Disabling unencrypted WinRM..."
+    winrm set winrm/config/service '@{AllowUnencrypted="false"}'
+}
+
+# Check for existing HTTPS listener
+$listenerExists = winrm enumerate winrm/config/listener | Select-String "Transport = HTTPS"
+if (-not $listenerExists) {
+    Write-Host "🔐 Creating self-signed certificate..."
+    $cert = New-SelfSignedCertificate `
+        -DnsName $DnsName `
+        -CertStoreLocation "cert:\LocalMachine\My"
+    $thumbprint = $cert.Thumbprint
+    Write-Host "📌 Cert Thumbprint: $thumbprint"
+
+    Write-Host "📡 Creating HTTPS WinRM listener..."
+    winrm create winrm/config/Listener?Address=*+Transport=HTTPS `
+        "@{Hostname=`"$DnsName`"; CertificateThumbprint=`"$thumbprint`"}"
+} else {
+    Write-Host "⚠️ HTTPS listener already exists. Skipping..."
+}
+
+# Add firewall rule if not present
+$fwRule = Get-NetFirewallRule -DisplayName "Allow WinRM over HTTPS" -ErrorAction SilentlyContinue
+if (-not $fwRule) {
+    Write-Host "🔥 Adding firewall rule for port $WinRMPort..."
+    New-NetFirewallRule -Name "AllowWinRMHTTPS" `
+        -DisplayName "Allow WinRM over HTTPS" `
+        -Protocol TCP `
+        -LocalPort $WinRMPort `
+        -Direction Inbound `
+        -Action Allow
+} else {
+    Write-Host "⚠️ Firewall rule already exists. Skipping..."
+}
+
+# Add user to required groups if not already
+function Add-ToGroupIfMissing($group, $user) {
+    if (-not (Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Where-Object {$_.Name -match $user})) {
+        Write-Host "👥 Adding '$user' to '$group'..."
+        Add-LocalGroupMember -Group $group -Member $user -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "👥 '$user' already in group '$group'. Skipping..."
+    }
+}
+
+Add-ToGroupIfMissing -group "Administrators" -user $Username
+Add-ToGroupIfMissing -group "Remote Management Users" -user $Username
+
+# Restart WinRM service
+Write-Host "🔁 Restarting WinRM service..."
+Restart-Service WinRM -Force
+
+# Verify WinRM over HTTPS
+Write-Host "`n🧪 Verifying WinRM listener on port $WinRMPort..."
+Test-WSMan -ComputerName localhost -Port $WinRMPort -UseSSL
+
+Write-Host "`n✅ WinRM over HTTPS is configured and ready for Ansible."
+
+# Stop logging
+Stop-Transcript
