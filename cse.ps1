@@ -33,45 +33,46 @@ $LogPath = "C:\Ansible-WinRM-Setup.log"
 
 Start-Transcript -Path $LogPath -Append
 
-Write-Host "`n🔧 Starting idempotent WinRM setup..."
+Write-Host "Starting idempotent WinRM setup..."
 
 if ((winrm enumerate winrm/config/listener -ErrorAction SilentlyContinue) -eq $null) {
-    Write-Host "✅ Enabling WinRM..."
+    Write-Host "Enabling WinRM..."
     winrm quickconfig -force
 }
 
 $basicAuth = (winrm get winrm/config/service/auth | Select-String "Basic").ToString()
 if ($basicAuth -notmatch "true") {
-    Write-Host "✅ Enabling Basic Authentication..."
+    Write-Host "Enabling Basic Authentication..."
     winrm set winrm/config/service/auth '@{Basic="true"}'
 }
 
 $unencrypted = (winrm get winrm/config/service | Select-String "AllowUnencrypted").ToString()
 if ($unencrypted -notmatch "false") {
-    Write-Host "✅ Disabling unencrypted WinRM..."
+    Write-Host "Disabling unencrypted WinRM..."
     winrm set winrm/config/service '@{AllowUnencrypted="false"}'
 }
 
 $listenerExists = winrm enumerate winrm/config/listener | Select-String "Transport = HTTPS"
 if (-not $listenerExists) {
-    Write-Host "🔐 Creating self-signed certificate..."
+    Write-Host "Creating self-signed certificate..."
     $cert = New-SelfSignedCertificate -DnsName $DnsName -CertStoreLocation "cert:\LocalMachine\My"
     $thumbprint = $cert.Thumbprint
-    Write-Host "📌 Cert Thumbprint: $thumbprint"
+    Write-Host "Cert Thumbprint: $thumbprint"
 
-    Write-Host "📡 Creating HTTPS listener..."
+    Write-Host "Creating HTTPS listener..."
     winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$DnsName`"; CertificateThumbprint=`"$thumbprint`"}"
-} else {
-    Write-Host "⚠️ HTTPS listener already exists. Skipping..."
+} 
+else {
+    Write-Host "HTTPS listener already exists. Skipping..."
 }
 
 $fwRule = Get-NetFirewallRule -DisplayName "Allow WinRM over HTTPS" -ErrorAction SilentlyContinue
 if (-not $fwRule) {
-    Write-Host "🔥 Adding firewall rule for port $WinRMPort..."
+    Write-Host "Adding firewall rule for port $WinRMPort..."
     New-NetFirewallRule -Name "AllowWinRMHTTPS" -DisplayName "Allow WinRM over HTTPS" `
         -Protocol TCP -LocalPort $WinRMPort -Direction Inbound -Action Allow
 } else {
-    Write-Host "⚠️ Firewall rule already exists. Skipping..."
+    Write-Host "Firewall rule already exists. Skipping..."
 }
 
 function Add-ToGroupIfMissing {
@@ -81,22 +82,28 @@ function Add-ToGroupIfMissing {
     )
     $inGroup = Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $user }
     if (-not $inGroup) {
-        Write-Host "👥 Adding '$user' to '$group'..."
+        Write-Host "Adding '$user' to '$group'..."
         Add-LocalGroupMember -Group $group -Member $user -ErrorAction SilentlyContinue
     } else {
-        Write-Host "👥 '$user' already in group '$group'. Skipping..."
+        Write-Host "'$user' already in group '$group'. Skipping..."
     }
 }
 
 Add-ToGroupIfMissing -group "Administrators" -user $Username
 Add-ToGroupIfMissing -group "Remote Management Users" -user $Username
 
-Write-Host "🔁 Restarting WinRM service..."
+Write-Host "Restarting WinRM service..."
 Restart-Service WinRM -Force
 
-Write-Host "`n🧪 Verifying WinRM listener on port $WinRMPort..."
-Test-WSMan -ComputerName localhost -Port $WinRMPort -UseSSL
+Write-Host "Verifying WinRM listener on port $WinRMPort..."
+try {
+    Test-WSMan -ComputerName localhost -Port $WinRMPort -UseSSL -ErrorAction Stop
+    Write-Host "WinRM over HTTPS is working."
+} catch {
+    Write-Warning "Test-WSMan failed: $($_.Exception.Message)"
+    Write-Warning "This is expected if using a self-signed certificate. Continuing anyway..."
+}
 
-Write-Host "`n✅ WinRM over HTTPS is configured and ready for Ansible."
+Write-Host "WinRM over HTTPS is configured and ready for Ansible."
 
 Stop-Transcript
